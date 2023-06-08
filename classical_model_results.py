@@ -5,6 +5,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+import json
+import os
+
 
 import data_processing
 
@@ -38,7 +41,7 @@ def print_model_accuracy(y_test, y_pred, text_type, model):
     accuracy = accuracy_score(y_test, y_pred)
     print(f'Achieved {accuracy*100:.2f}% test accuracy in {text_type} classification using {type(model).__name__}.')
 
-def fit_model(model, text_type, dataset):
+def fit_model(model, text_type, dataset, altStart):
     # Load, preprocess, and split data
     X, y = data_processing.preprocess_data(f'data/{dataset}.json', text_type)
     X_train, _, X_test, y_train, _, y_test = data_processing.split_data(X, y)
@@ -54,23 +57,66 @@ def fit_model(model, text_type, dataset):
     model.fit(X_train_tfidf, y_train)
 
     # Compute accuracy on the test set if called for
-    if dataset == 'quora_insincere_hand_labeled' and text_type == 'response':
+    if dataset == 'quora_insincere_hand_labeled' and text_type == 'response' and not altStart:
         y_pred = model.predict(X_test_tfidf)
         print_model_accuracy(y_test, y_pred, text_type, model)
-    elif dataset == 'quora_insincere_large_bootstrap' and text_type == 'prompt':
+
+    elif dataset == 'quora_insincere_large_bootstrap' and text_type == 'prompt' and not altStart:
         X_test, y_test = data_processing.preprocess_data(f'data/quora_insincere_hand_labeled.json', text_type)
         X_test_tfidf = vectorizer.transform(X_test)
         y_pred = model.predict(X_test_tfidf)
         print_model_accuracy(y_test, y_pred, text_type, model)
 
-    if isinstance(model, LogisticRegression) and dataset != 'quora_insincere_hand_labeled':
+    elif dataset == 'quora_insincere_large_bootstrap' and text_type == 'prompt' and altStart:
+        data = []
+        folder_path = "data/AlteredDatasets"
+        # Iterate through the files in the folder
+        for filename in os.listdir(os.path.abspath(folder_path)):
+            file_path = os.path.join(folder_path, filename)
+
+            X_test, y_test = data_processing.preprocess_data(file_path, text_type)
+            X_test_tfidf = vectorizer.transform(X_test)
+            y_pred = model.predict(X_test_tfidf)
+
+            total_items = len(y_pred)
+            count_a = np.count_nonzero(y_pred == 'complied')
+            percentage_a = int((count_a / total_items) * 100)
+            filename = filename[:-5]
+            data.append([filename, percentage_a])
+        
+        data.sort(key=lambda x: x[1], reverse=True)
+        for pair in data:
+            print(f"{pair[0]:<100} {pair[1]}")
+
+
+
+    if isinstance(model, LogisticRegression) and dataset != 'quora_insincere_hand_labeled' and not altStart:
         # Plot the n-gram coefficients for logistic regression
         plot_ngram_coefficients(dataset, vectorizer.get_feature_names_out(), model.coef_[0], text_type)
+
+def prepareAlternativeDatasets():
+    json_file_path = "data/all_hand_labeled.json"
+    
+    with open("alternativeStarts.json", "r") as json_file:
+        altStarts = json.load(json_file)
+
+    for start in altStarts:
+        with open(json_file_path, "r") as json_file:
+            data = json.load(json_file)
+
+        for item in data:
+            item["prompt"] = start + item["prompt"]
+        fileName = "data/AlteredDatasets/" + start + ".json"
+
+        with open(fileName, "w") as json_file:
+            json.dump(data, json_file, indent=4)
+
 
 if __name__ == '__main__':
     # Parse command-line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--fit_random_forest_on_quora_10k', action='store_true')
+    parser.add_argument('--Alternate_Starting_Text', action='store_true')
     args = parser.parse_args()
 
     # Define the classical models
@@ -88,7 +134,6 @@ if __name__ == '__main__':
         solver='liblinear',
         random_state=0
     )
-
     rf_responses_model = RandomForestClassifier(
         max_depth=None,
         min_samples_leaf=1,
@@ -103,35 +148,46 @@ if __name__ == '__main__':
         n_estimators=3000,
         random_state=0
     )
+    if args.Alternate_Starting_Text:
+        prepareAlternativeDatasets()
+        print('Finished preparing alternative prompts.')
+        print()
 
-    # Get results for Table 4's classical model accuracies
-    print('[Table 4 (classical models)]')
-    print('Calculating classical model accuracies for dataset: Quora Insincere Questions...')
-    fit_model(lr_responses_model,   'response', 'quora_insincere_hand_labeled')
-    fit_model(rf_responses_model,   'response', 'quora_insincere_hand_labeled')
+    if not args.Alternate_Starting_Text:
+        # Get results for Table 4's classical model accuracies
+        print('[Table 4 (classical models)]')
+        print('Calculating classical model accuracies for dataset: Quora Insincere Questions...')
+    fit_model(lr_responses_model,   'response', 'quora_insincere_hand_labeled', args.Alternate_Starting_Text)
+    fit_model(rf_responses_model,   'response', 'quora_insincere_hand_labeled', args.Alternate_Starting_Text)
 
     # For the following 2 fits, we use the quora_insincere_large_bootstrap dataset to train the model (using a 70/15/15
     # train/validation/test split). However, we test the models on the entirety of  quora_insincere_hand_labeled
     # dataset, not the test set from the quora_insincere_large_bootstrap dataset.
-    fit_model(lr_prompts_model,     'prompt',   'quora_insincere_large_bootstrap')
+    fit_model(lr_prompts_model,     'prompt',   'quora_insincere_large_bootstrap', args.Alternate_Starting_Text)
+
     if args.fit_random_forest_on_quora_10k:
-        fit_model(rf_prompts_model, 'prompt',   'quora_insincere_large_bootstrap')
-    else:
+        fit_model(rf_prompts_model, 'prompt',   'quora_insincere_large_bootstrap', args.Alternate_Starting_Text)
+    elif not args.Alternate_Starting_Text:
         print('Skipping random forest prompt classifier fitting.')
-    print()
 
-    # Get results for Fig. 3's n-gram coefficients
-    print('[Fig. 3]')
-    print('Calculating n-gram coefficients for dataset: Hand-Labeled...')
-    fit_model(lr_responses_model,   'response', 'all_hand_labeled')
-    fit_model(lr_prompts_model,     'prompt',   'all_hand_labeled')
-    print()
+    if not args.Alternate_Starting_Text:
+        print()
+        # Get results for Fig. 3's n-gram coefficients
+        print('[Fig. 3]')
+        print('Calculating n-gram coefficients for dataset: Hand-Labeled...')
+    fit_model(lr_responses_model,   'response', 'all_hand_labeled', args.Alternate_Starting_Text)
+    fit_model(lr_prompts_model,     'prompt',   'all_hand_labeled', args.Alternate_Starting_Text)
 
-    # Get results for Fig. 4's n-gram coefficients
-    print('[Fig. 4]')
-    print('Calculating n-gram coefficients for dataset: Bootstrapped Quora Insincere Questions...')
-    fit_model(lr_responses_model,   'response', 'quora_insincere_large_bootstrap')
+    if not args.Alternate_Starting_Text:
+        print()
+        # Get results for Fig. 4's n-gram coefficients
+        print('[Fig. 4]')
+        print('Calculating n-gram coefficients for dataset: Bootstrapped Quora Insincere Questions...')
+    fit_model(lr_responses_model,   'response', 'quora_insincere_large_bootstrap', args.Alternate_Starting_Text)
     #fit_model(lr_prompts_model,     'prompt',   'quora_insincere_large_bootstrap')  # this was already done above
     print()
 
-    print('Finished; n-gram coefficients were written to the "results" folder.')
+    if not args.Alternate_Starting_Text:
+        print('Finished; n-gram coefficients were written to the "results" folder.')
+
+    
